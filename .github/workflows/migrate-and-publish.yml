@@ -59,7 +59,9 @@ jobs:
           git fetch origin gh-pages
           git worktree add -B gh-pages "$RUNNER_TEMP/exam-pages" origin/gh-pages
           # Retain existing inert workflow definitions; a build token must not modify workflow files.
-          rsync -a --delete --exclude='.git' --exclude='.github' "$RUNNER_TEMP/exam-site/" "$RUNNER_TEMP/exam-pages/"
+          # Check content, not just size/mtime: checkout timestamps can match for different bytes.
+          rsync -a --checksum --delete --exclude='.git' --exclude='.github' "$RUNNER_TEMP/exam-site/" "$RUNNER_TEMP/exam-pages/"
+          cmp "$RUNNER_TEMP/exam-site/deployment.json" "$RUNNER_TEMP/exam-pages/deployment.json"
           git -C "$RUNNER_TEMP/exam-pages" add -A
           if ! git -C "$RUNNER_TEMP/exam-pages" diff --cached --quiet; then
             git -C "$RUNNER_TEMP/exam-pages" commit -m "Publish IICA examination from $(git rev-parse --short HEAD)"
