@@ -1,0 +1,142 @@
+name: Migrate and publish IICA examination
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pages: write
+  id-token: write
+
+concurrency:
+  group: iica-pages
+  cancel-in-progress: false
+
+jobs:
+  prepare:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 0
+      - name: Import complete pinned exam source once
+        if: ${{ hashFiles('migration/source-manifest.json') == '' }}
+        env:
+          SOURCE_SHA: b9ca05199811c6fe17ab4906ad01899200cee823
+        run: |
+          set -eu
+          git clone --quiet https://github.com/thisisanand-tm/sudoku.git "$RUNNER_TEMP/exam-source"
+          git -C "$RUNNER_TEMP/exam-source" cat-file -e "$SOURCE_SHA^{commit}"
+          mkdir -p "$RUNNER_TEMP/exam-export"
+          git -C "$RUNNER_TEMP/exam-source" archive "$SOURCE_SHA" | tar -x -C "$RUNNER_TEMP/exam-export"
+          python - <<'PY'
+          import hashlib, json, os, shutil, subprocess
+          from datetime import datetime, timezone
+          from pathlib import Path
+          root = Path.cwd()
+          source = Path(os.environ['RUNNER_TEMP']) / 'exam-export'
+          records = []
+          for p in sorted(source.rglob('*')):
+              if not p.is_file():
+                  continue
+              rel = p.relative_to(source)
+              destination = rel
+              if str(rel).startswith('.github/workflows/'):
+                  destination = Path('maintenance/legacy-workflows') / rel.name
+              target = root / destination
+              target.parent.mkdir(parents=True, exist_ok=True)
+              shutil.copyfile(p, target)
+              records.append({'sourcePath':str(rel), 'destinationPath':str(destination), 'sourceSha256':hashlib.sha256(p.read_bytes()).hexdigest()})
+          m = json.loads(Path('data/bank_manifest.json').read_text())
+          assert m['activeQuestionCount'] == 501, m
+          manifest_path = Path('manifest.json')
+          manifest = json.loads(manifest_path.read_text())
+          manifest.update({'id':'/iica-examination/', 'scope':'./', 'start_url':'./', 'name':'Director Mock India - IICA Examination', 'short_name':'IICA Mock', 'description':'Independent Director examination practice with the preserved 501-question sourced bank.'})
+          manifest_path.write_text(json.dumps(manifest, ensure_ascii=False, indent=2)+'\n')
+          sw = Path('sw.js').read_text()
+          sw = sw.replace("const CACHE='director-mock-v12-sebi-501';", "const CACHE_PREFIX='iica-examination-';\nconst CACHE='iica-examination-v13-migration-501';")
+          sw = sw.replace('keys.filter(key=>key!==CACHE)', 'keys.filter(key=>key.startsWith(CACHE_PREFIX)&&key!==CACHE)')
+          sw = sw.replace("if(url.origin!==self.location.origin) return;", "if(url.origin!==self.location.origin || !url.pathname.startsWith(new URL(self.registration.scope).pathname)) return;")
+          assert "key.startsWith(CACHE_PREFIX)" in sw
+          Path('sw.js').write_text(sw)
+          Path('README.md').write_text('# IICA Examination - Director Mock India\n\nDedicated home of the exam application migrated from `thisisanand-tm/sudoku`.\n\nTest site: https://thisisanand-tm.github.io/iica-examination/\n\nSudoku game: https://thisisanand-tm.github.io/sudoku/\n\n## Preserved application\n\nThe migration preserves all application code, all 501 active questions and their IDs, all source licences, audit records, candidate datasets, icons and maintenance scripts. Question content and exam scoring have not been changed or revalidated by this migration. The bank metadata records its existing 16 September 2026 review.\n\nBrowser history keys (`directorMock.history.v2` and related keys) remain unchanged. Both paths use the same GitHub Pages origin, so existing results remain available in the same browser profile. The service worker is isolated to this application and does not delete Sudoku caches.\n\n## Deployment\n\nThe active `migrate-and-publish.yml` workflow validates and publishes changes to `main`. GitHub Pages must use GitHub Actions as its publishing source.\n\n## Historical maintenance workflows\n\nAll original workflow definitions are preserved byte-for-byte in `maintenance/legacy-workflows/`. They are archived, not active: several are one-time migrations with old branch names or hard-coded historical bank sizes. Their supporting scripts remain in `scripts/`. Do not run an old promotion script against the live bank without reviewing its preconditions.\n\n## Provenance\n\nSee `migration/source-manifest.json` for original and migrated file hashes, `SOURCES.md` and `QUESTION_BANK_LICENSE.md` for attribution, and `audit/` for historical validation evidence.\n')
+          for record in records:
+              b = Path(record['destinationPath']).read_bytes()
+              record['destinationSha256'] = hashlib.sha256(b).hexdigest()
+              record['identical'] = record['sourceSha256'] == record['destinationSha256']
+              if not record['identical']:
+                  assert record['sourcePath'] in {'README.md','manifest.json','sw.js'}, record
+          Path('migration').mkdir(exist_ok=True)
+          Path('migration/source-manifest.json').write_text(json.dumps({'sourceRepository':'thisisanand-tm/sudoku','sourceCommit':os.environ['SOURCE_SHA'],'migratedAt':datetime.now(timezone.utc).isoformat(),'activeQuestionCount':501,'files':records}, indent=2)+'\n')
+          Path('.nojekyll').touch()
+          print(json.dumps({'sourceFiles':len(records),'byteIdentical':sum(r['identical'] for r in records),'adaptedFiles':[r['sourcePath'] for r in records if not r['identical']]}, indent=2))
+          PY
+      - name: Validate application, complete bank, and file preservation
+        run: |
+          node <<'JS'
+          const fs=require('fs'), vm=require('vm'), assert=require('assert');
+          const html=fs.readFileSync('index.html','utf8');
+          const scripts=[...html.matchAll(/<script\s+src="([^"]+)"/g)].map(x=>x[1]);
+          const ctx={window:{}}; vm.createContext(ctx);
+          for(const p of scripts.filter(x=>x.startsWith('data/'))) vm.runInContext(fs.readFileSync(p,'utf8'),ctx,{filename:p});
+          const q=ctx.window.QUESTION_BANK, m=JSON.parse(fs.readFileSync('data/bank_manifest.json','utf8'));
+          assert.equal(q.length,501); assert.equal(m.activeQuestionCount,501);
+          assert.equal(new Set(q.map(x=>x.id)).size,501);
+          for(const x of q){assert.equal(x.options.length,4);assert.equal(new Set(x.options).size,4);assert(Number.isInteger(x.answer)&&x.answer>=0&&x.answer<4);}
+          const source=JSON.parse(fs.readFileSync('migration/source-manifest.json','utf8'));
+          const crypto=require('crypto');
+          for(const r of source.files){assert(fs.existsSync(r.destinationPath),r.destinationPath);const digest=crypto.createHash('sha256').update(fs.readFileSync(r.destinationPath)).digest('hex');assert.equal(digest,r.destinationSha256,r.destinationPath);}
+          for(const p of scripts){assert(fs.existsSync(p),p);new vm.Script(fs.readFileSync(p,'utf8'),{filename:p});}
+          new vm.Script(fs.readFileSync('sw.js','utf8'));
+          assert(fs.readFileSync('sw.js','utf8').includes('key.startsWith(CACHE_PREFIX)'));
+          const app=fs.readFileSync('app.js','utf8');assert(app.includes('directorMock.history.v2'));
+          fs.mkdirSync('migration',{recursive:true});
+          fs.writeFileSync('migration/validation.json',JSON.stringify({status:'PASS',activeQuestions:q.length,uniqueIds:new Set(q.map(x=>x.id)).size,sourceFilesVerified:source.files.length,scriptFilesValidated:scripts.length,questionContentUnchanged:true},null,2)+'\n');
+          console.log(fs.readFileSync('migration/validation.json','utf8'));
+          JS
+      - name: Commit migration and audit evidence
+        run: |
+          set -eu
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add -A
+          if ! git diff --cached --quiet; then
+            git commit -m 'Migrate complete 501-question exam app into dedicated repository'
+            git push origin HEAD:main
+          fi
+      - name: Prepare public site artifact
+        run: |
+          mkdir -p _site
+          cp index.html app.js styles.css sw.js pwa-update.js manifest.json .nojekyll SOURCES.md QUESTION_BANK_LICENSE.md AUDIT_SUMMARY.md _site/
+          cp -r data icons _site/
+          mkdir -p _site/migration
+          cp migration/validation.json _site/migration/
+      - uses: actions/upload-pages-artifact@v4
+        with:
+          path: _site
+      - name: Upload migration verification evidence
+        uses: actions/upload-artifact@v4
+        with:
+          name: migration-verification
+          path: migration/
+
+  deploy:
+    needs: prepare
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Configure Pages
+        uses: actions/configure-pages@v5
+      - name: Publish examination site
+        id: deployment
+        uses: actions/deploy-pages@v4
