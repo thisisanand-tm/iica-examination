@@ -1,0 +1,93 @@
+{
+  "status": "PASS",
+  "checkedAt": "2026-09-20T09:34:47.920Z",
+  "exam": [
+    {
+      "width": 360,
+      "questions": 501,
+      "overflow": false,
+      "historyKey": "directorMock.history.v2"
+    },
+    {
+      "width": 390,
+      "questions": 501,
+      "overflow": false,
+      "historyKey": "directorMock.history.v2"
+    },
+    {
+      "width": 768,
+      "questions": 501,
+      "overflow": false,
+      "historyKey": "directorMock.history.v2"
+    },
+    {
+      "width": 1440,
+      "questions": 501,
+      "overflow": false,
+      "historyKey": "directorMock.history.v2"
+    }
+  ],
+  "sudoku": [
+    {
+      "width": 360,
+      "cells": 81,
+      "overflow": false,
+      "title": "Sudoku"
+    },
+    {
+      "width": 390,
+      "cells": 81,
+      "overflow": false,
+      "title": "Sudoku"
+    },
+    {
+      "width": 768,
+      "cells": 81,
+      "overflow": false,
+      "title": "Sudoku"
+    },
+    {
+      "width": 1440,
+      "cells": 81,
+      "overflow": false,
+      "title": "Sudoku"
+    }
+  ],
+  "live": {
+    "iica-examination": {
+      "httpStatus": 200,
+      "url": "https://thisisanand-tm.github.io/iica-examination/",
+      "title": "Director Mock India",
+      "questions": 501,
+      "verified": true
+    },
+    "sudoku": {
+      "httpStatus": 200,
+      "url": "https://thisisanand-tm.github.io/sudoku/",
+      "title": "Sudoku",
+      "sudokuControls": true,
+      "verified": true
+    }
+  },
+  "mock": {
+    "count": 50,
+    "kind": "mock",
+    "stored": 50
+  },
+  "practice": {
+    "count": 20,
+    "kind": "practice"
+  },
+  "sudokuEntryUndo": true,
+  "cacheIsolation": {
+    "status": "PASS",
+    "caches": [
+      "iica-examination-v13-migration-501",
+      "unrelated-app-sentinel",
+      "sudoku-restored-v4-20260920"
+    ]
+  },
+  "examOffline": true,
+  "sudokuOffline": true,
+  "pageErrors": []
+}
