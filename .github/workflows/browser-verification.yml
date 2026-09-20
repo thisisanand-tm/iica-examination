@@ -6,111 +6,123 @@ on:
   workflow_dispatch:
 permissions:
   contents: write
+  actions: write
+concurrency:
+  group: migrated-app-browser
+  cancel-in-progress: true
 jobs:
   browser:
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 8
     steps:
       - uses: actions/checkout@v4
         with: {ref: main, fetch-depth: 0}
-      - name: Prepare two-app local test site
+      - name: Stop superseded unbounded test run
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
+          if [ "$(gh api repos/thisisanand-tm/iica-examination/actions/runs/35502358658 --jq .status)" != completed ]; then
+            gh api --method POST repos/thisisanand-tm/iica-examination/actions/runs/35502358658/cancel || true
+          fi
+      - name: Install browser and prepare latest applications
+        run: |
+          npm install --prefix "$RUNNER_TEMP/browser-tools" playwright@1.55.0
+          "$RUNNER_TEMP/browser-tools/node_modules/.bin/playwright" install --with-deps chromium
           mkdir -p "$RUNNER_TEMP/www/iica-examination"
           git archive HEAD | tar -x -C "$RUNNER_TEMP/www/iica-examination"
           git clone --quiet --depth 1 https://github.com/thisisanand-tm/sudoku.git "$RUNNER_TEMP/www/sudoku"
-          npm install --prefix "$RUNNER_TEMP/browser-tools" playwright@1.55.0
-          "$RUNNER_TEMP/browser-tools/node_modules/.bin/playwright" install --with-deps chromium
-      - name: Run functional responsive and offline tests
+          test -f "$RUNNER_TEMP/www/sudoku/sudoku-pwa.js"
+          test -f "$RUNNER_TEMP/www/sudoku/restoration-validation.json"
+      - name: Test mobile desktop functions offline and public URLs
         env:
           NODE_PATH: ${{ runner.temp }}/browser-tools/node_modules
         run: |
           python -m http.server 8765 --directory "$RUNNER_TEMP/www" >/tmp/iica-http.log 2>&1 &
-          node <<'JS'
+          timeout 240 node <<'JS'
           const {chromium}=require('playwright');
           const fs=require('fs'),assert=require('assert');
           (async()=>{
             const browser=await chromium.launch({headless:true});
             const context=await browser.newContext();
-            const page=await context.newPage();
+            const page=await context.newPage();page.setDefaultTimeout(15000);page.setDefaultNavigationTimeout(20000);
             const errors=[];page.on('pageerror',e=>errors.push(e.message));
-            const base='http://127.0.0.1:8765';
-            const result={status:'PASS',checkedAt:new Date().toISOString(),exam:[],sudoku:[],live:{}};
+            const result={status:'RUNNING',checkedAt:new Date().toISOString(),exam:[],sudoku:[],live:{}};
             fs.mkdirSync('browser-verification',{recursive:true});
-            for(const width of [360,390,768,1440]){
-              await page.setViewportSize({width,height:900});
+            const base='http://127.0.0.1:8765';
+            try{
+              for(const width of [360,390,768,1440]){
+                await page.setViewportSize({width,height:900});
+                await page.goto(base+'/iica-examination/',{waitUntil:'networkidle'});
+                await page.waitForFunction(()=>window.QUESTION_BANK?.length===501);
+                const v=await page.evaluate(()=>({questions:window.QUESTION_BANK.length,overflow:document.documentElement.scrollWidth>innerWidth+2,historyKey:STORAGE.history}));
+                assert.equal(v.questions,501);assert(!v.overflow,'Exam overflow '+width);result.exam.push({width,...v});
+              }
+              await page.waitForFunction(()=>Boolean(navigator.serviceWorker.controller));
+              await page.evaluate(async()=>{await createMock();});
+              const mock=await page.evaluate(()=>({count:state.questions.length,kind:state.kind,stored:JSON.parse(localStorage.getItem(STORAGE.active)).questions.length}));
+              assert.equal(mock.count,50);assert.equal(mock.kind,'mock');assert.equal(mock.stored,50);result.mock=mock;
+              await page.evaluate(async()=>{clearActive();await createPractice();});
+              const practice=await page.evaluate(()=>({count:state.questions.length,kind:state.kind}));
+              assert.equal(practice.count,20);assert.equal(practice.kind,'practice');result.practice=practice;
+              await page.evaluate(()=>{clearActive();localStorage.setItem('migration-test-sentinel','preserve');});
               await page.goto(base+'/iica-examination/',{waitUntil:'networkidle'});
-              await page.waitForFunction(()=>window.QUESTION_BANK?.length===501);
-              const v=await page.evaluate(()=>({questions:window.QUESTION_BANK.length,overflow:document.documentElement.scrollWidth>innerWidth+2,historyKey:STORAGE.history}));
-              assert.equal(v.questions,501);assert(!v.overflow,'Exam horizontal overflow at '+width);
-              result.exam.push({width,...v});
-            }
-            await page.evaluate(async()=>{await createMock();});
-            let mock=await page.evaluate(()=>({count:state.questions.length,kind:state.kind,stored:JSON.parse(localStorage.getItem(STORAGE.active)).questions.length}));
-            assert.equal(mock.count,50);assert.equal(mock.kind,'mock');assert.equal(mock.stored,50);result.mock=mock;
-            await page.evaluate(async()=>{clearActive();await createPractice();});
-            const practice=await page.evaluate(()=>({count:state.questions.length,kind:state.kind}));
-            assert.equal(practice.count,20);assert.equal(practice.kind,'practice');result.practice=practice;
-            await page.evaluate(()=>{clearActive();localStorage.setItem('migration-test-sentinel','preserve');});
-            await page.goto(base+'/iica-examination/',{waitUntil:'networkidle'});
-            await page.evaluate(()=>navigator.serviceWorker.ready);
-            await page.evaluate(()=>caches.open('unrelated-app-sentinel'));
-            await page.screenshot({path:'browser-verification/exam-desktop.png',fullPage:true});
-            for(const width of [360,390,768,1440]){
-              await page.setViewportSize({width,height:900});
-              await page.goto(base+'/sudoku/',{waitUntil:'networkidle'});
-              await page.waitForSelector('#startOverlay');
-              await page.locator('#startOverlay [data-diff="Medium"]').click();
-              await page.waitForSelector('#board .cell');
-              const v=await page.evaluate(()=>({cells:document.querySelectorAll('#board .cell').length,overflow:document.documentElement.scrollWidth>innerWidth+2,title:document.title}));
-              assert.equal(v.cells,81);assert.equal(v.title,'Sudoku');assert(!v.overflow,'Sudoku horizontal overflow at '+width);
-              result.sudoku.push({width,...v});
-            }
-            const cell=page.locator('#board .cell:not(.fixed)').first();
-            await cell.click();await page.keyboard.press('1');
-            assert.equal(await page.locator('#board .cell.selected .val').textContent(),'1');
-            await page.locator('#undoBtn').click();assert.equal(await page.locator('#board .cell.selected .val').count(),0);
-            result.sudokuEntryUndo=true;
-            await page.evaluate(()=>navigator.serviceWorker.ready);
-            const cachesBefore=await page.evaluate(()=>caches.keys());
-            assert(cachesBefore.some(x=>x.startsWith('iica-examination-')),'Exam cache lost');
-            assert(cachesBefore.some(x=>x.startsWith('sudoku-')),'Sudoku cache missing');
-            assert(cachesBefore.includes('unrelated-app-sentinel'),'Unrelated cache deleted');
-            assert.equal(await page.evaluate(()=>localStorage.getItem('migration-test-sentinel')),'preserve');
-            result.cacheIsolation={status:'PASS',caches:cachesBefore};
-            await page.setViewportSize({width:390,height:844});
-            await page.screenshot({path:'browser-verification/sudoku-mobile.png',fullPage:true});
-            await context.setOffline(true);
-            await page.goto(base+'/iica-examination/',{waitUntil:'domcontentloaded'});
-            await page.waitForFunction(()=>window.QUESTION_BANK?.length===501);result.examOffline=true;
-            await page.goto(base+'/sudoku/',{waitUntil:'domcontentloaded'});assert.equal(await page.title(),'Sudoku');result.sudokuOffline=true;
-            await context.setOffline(false);
-            assert.equal(errors.length,0,JSON.stringify(errors));result.pageErrors=errors;
-            for(const app of ['iica-examination','sudoku']){
-              const p=await context.newPage();
-              try{
+              await page.evaluate(()=>caches.open('unrelated-app-sentinel'));
+              await page.screenshot({path:'browser-verification/exam-desktop.png',fullPage:true});
+              for(const width of [360,390,768,1440]){
+                await page.setViewportSize({width,height:900});
+                await page.goto(base+'/sudoku/',{waitUntil:'networkidle'});
+                await page.waitForFunction(()=>Boolean(navigator.serviceWorker.controller));
+                await page.locator('#startOverlay [data-diff="Medium"]').click();
+                await page.waitForSelector('#board .cell');
+                const v=await page.evaluate(()=>({cells:document.querySelectorAll('#board .cell').length,overflow:document.documentElement.scrollWidth>innerWidth+2,title:document.title}));
+                assert.equal(v.cells,81);assert.equal(v.title,'Sudoku');assert(!v.overflow,'Sudoku overflow '+width);result.sudoku.push({width,...v});
+              }
+              await page.locator('#board .cell:not(.fixed)').first().click();await page.keyboard.press('1');
+              assert.equal(await page.locator('#board .cell.selected .val').textContent(),'1');
+              await page.locator('#undoBtn').click();assert.equal(await page.locator('#board .cell.selected .val').count(),0);result.sudokuEntryUndo=true;
+              const cachesBefore=await page.evaluate(()=>caches.keys());
+              assert(cachesBefore.some(x=>x.startsWith('iica-examination-')),'Exam cache lost');
+              assert(cachesBefore.some(x=>x.startsWith('sudoku-')),'Sudoku cache missing');
+              assert(cachesBefore.includes('unrelated-app-sentinel'),'Unrelated cache deleted');
+              assert.equal(await page.evaluate(()=>localStorage.getItem('migration-test-sentinel')),'preserve');
+              result.cacheIsolation={status:'PASS',caches:cachesBefore};
+              await page.setViewportSize({width:390,height:844});
+              await page.screenshot({path:'browser-verification/sudoku-mobile.png',fullPage:true});
+              await context.setOffline(true);
+              await page.goto(base+'/iica-examination/',{waitUntil:'domcontentloaded'});
+              await page.waitForFunction(()=>window.QUESTION_BANK?.length===501);result.examOffline=true;
+              await page.goto(base+'/sudoku/',{waitUntil:'domcontentloaded'});assert.equal(await page.title(),'Sudoku');result.sudokuOffline=true;
+              await context.setOffline(false);
+              assert.equal(errors.length,0,JSON.stringify(errors));result.pageErrors=errors;
+              for(const app of ['iica-examination','sudoku']){
+                const p=await context.newPage();p.setDefaultTimeout(15000);
                 const response=await p.goto('https://thisisanand-tm.github.io/'+app+'/',{waitUntil:'networkidle',timeout:30000});
-                const entry={status:response.status(),url:p.url(),title:await p.title()};
-                if(response.ok()){
-                  if(app==='iica-examination'){await p.waitForFunction(()=>window.QUESTION_BANK?.length===501,{timeout:15000});entry.questions=await p.evaluate(()=>window.QUESTION_BANK.length);}
-                  else {entry.sudokuControls=await p.locator('#newBtn').count();}
-                  entry.verified=true;
-                }else entry.verified=false;
-                result.live[app]=entry;
-              }catch(e){result.live[app]={verified:false,error:e.message};}
-              await p.close();
+                const entry={httpStatus:response.status(),url:p.url(),title:await p.title()};
+                assert(response.ok(),'Live '+app+' returned '+response.status());
+                if(app==='iica-examination'){
+                  await p.waitForFunction(()=>window.QUESTION_BANK?.length===501);entry.questions=await p.evaluate(()=>window.QUESTION_BANK.length);
+                }else{
+                  assert.equal(entry.title,'Sudoku');assert.equal(await p.locator('#newBtn').count(),1);entry.sudokuControls=true;
+                }
+                entry.verified=true;result.live[app]=entry;
+                await p.screenshot({path:'browser-verification/live-'+app+'.png',fullPage:true});await p.close();
+              }
+              result.status='PASS';
+            }catch(e){result.status='FAIL';result.error=e.stack;throw e;}
+            finally{
+              fs.writeFileSync('browser-verification/result.json',JSON.stringify(result,null,2)+'\n');
+              fs.mkdirSync('migration',{recursive:true});fs.copyFileSync('browser-verification/result.json','migration/browser-validation.json');
+              console.log(JSON.stringify(result,null,2));await browser.close();
             }
-            fs.writeFileSync('browser-verification/result.json',JSON.stringify(result,null,2)+'\n');
-            fs.mkdirSync('migration',{recursive:true});fs.copyFileSync('browser-verification/result.json','migration/browser-validation.json');
-            console.log(JSON.stringify(result,null,2));await browser.close();
           })().catch(e=>{console.error(e);process.exit(1)});
           JS
-      - name: Commit browser verification result
+      - name: Commit successful browser verification
         run: |
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
           git add migration/browser-validation.json
           if ! git diff --cached --quiet; then
-            git commit -m 'Record mobile desktop functional and offline browser verification'
+            git commit -m 'Verify both live sites plus mobile desktop and offline functions'
             git pull --rebase origin main
             git push origin HEAD:main
           fi
