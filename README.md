@@ -14,7 +14,9 @@ Browser history keys (`directorMock.history.v2` and related keys) remain unchang
 
 ## Deployment
 
-The active `migrate-and-publish.yml` workflow validates and publishes changes to `main`. GitHub Pages must use GitHub Actions as its publishing source.
+`main` is the authoritative source branch. The active `migrate-and-publish.yml` workflow validates the application, assembles the public assets, updates the `gh-pages` publishing branch without rewriting history, and requests a GitHub Pages build. Pages serves the root of `gh-pages`.
+
+The `browser-verification.yml` workflow checks the exam and restored Sudoku on mobile and desktop viewports, functional mock/practice creation, Sudoku entry and undo, offline loading, cache isolation, and both public URLs. Its results are recorded in `migration/browser-validation.json` after a successful run.
 
 ## Historical maintenance workflows
 
@@ -22,4 +24,4 @@ All original workflow definitions are preserved byte-for-byte in `maintenance/le
 
 ## Provenance
 
-See `migration/source-manifest.json` for original and migrated file hashes, `SOURCES.md` and `QUESTION_BANK_LICENSE.md` for attribution, and `audit/` for historical validation evidence.
+`migration/source-manifest.json` records the original migration snapshot and file hashes. It is historical evidence, not a freeze preventing future maintenance. See `SOURCES.md` and `QUESTION_BANK_LICENSE.md` for attribution and `audit/` for historical validation evidence.
